@@ -18,9 +18,8 @@
 
 
 ## Requirements - 
-- pip install python-dotenv
-              schedule
-              matplotlib
+- pip install python-dotenvm, schedule, matplotlib
+
 
 ## How to Use - 
 - Install newest version of Python
