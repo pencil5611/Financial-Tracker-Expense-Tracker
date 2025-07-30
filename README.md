@@ -2,6 +2,7 @@
 
 
 ## Features -
+- CLI Expense Tracking 
 - Allows you to add/view expenses that you've logged
 - Stores data in csv files and reads from them to send weekly/monthly reports through email with pie charts
 - stores email so you don't have to continuously input it
