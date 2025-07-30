@@ -37,3 +37,4 @@
 - budget is saved as budget.csv
 - recipient email is saved as emailaddress.csv
 - pie charts for reports are saved as images (piechart.png for month and piechartweek.png for week)
+- If you found this useful, feel free to star it so other people can stumble upon it more easily :)
