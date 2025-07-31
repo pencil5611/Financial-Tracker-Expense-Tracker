@@ -7,7 +7,7 @@
 - Stores data in csv files and reads from them to send weekly/monthly reports through email with pie charts
 - stores email so you don't have to continuously input it
 - ~250 keywords for autocategorization of expenses
-- Groq AI to give in depth analysis, recommendations, and overall advice regarding user specific needs
+- Groq AI to give in depth analysis, recommendations, expense autocategorization, and overall advice regarding user specific needs
 
 ## Actions -
 - Add expenses → Add a transaction manually
