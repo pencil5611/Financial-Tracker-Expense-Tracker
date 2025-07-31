@@ -10,9 +10,11 @@ import schedule
 import time
 import matplotlib.pyplot as plt
 from keywords import keyword_map
-
+from groq import Groq
+import json
 load_dotenv()
 
+api_key = os.getenv('API_KEY')
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
 PASSWORD = os.getenv("PASSWORD")
 
@@ -36,6 +38,69 @@ if not os.path.exists(EXPENSES_FILE):
     with open(EXPENSES_FILE, 'w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(["Date", "Description", "Category", "Amount"])
+
+
+
+GOAL_FILE = 'goal.json'
+
+def set_goal():
+    global goal_amount
+    allowed_goals = ['spending', 'saving']
+
+    while True:
+        print('What type of goal would you like to set? Spending or Saving?')
+        goal_type = input('>').strip().lower()
+
+        if goal_type not in allowed_goals:
+            print('Please enter a valid goal type.')
+            continue
+
+        try:
+            print('What is the goal amount?')
+            goal_amount = float(input('>'))
+            break
+        except ValueError:
+            print('Please enter a valid number.')
+
+    with open(GOAL_FILE, 'w') as f:
+        json.dump({'type': goal_type, 'amount': goal_amount}, f)
+
+    print(f'{goal_type.title()} goal of ${goal_amount:.2f} has been set.')
+
+
+
+def load_goal():
+    if not os.path.exists(GOAL_FILE):
+        return None
+    with open(GOAL_FILE, 'r') as f:
+        return json.load(f)
+
+def show_progress_bar(spent_total):
+    global goal_type
+    goal = load_goal()
+    if not goal:
+        print('No goal.')
+        return
+    goal_amount = goal['amount']
+    goal_type = goal['type']
+
+    if goal_type == 'spending':
+        percent = min(spent_total / goal_amount, 1.0)
+        remaining = max(goal_amount - spent_total, 0)
+        label = f"Spent ${spent_total:.2f} / ${goal_amount:.2f} (Remaining: ${remaining:.2f})"
+    elif goal_type == 'saving':
+        percent = min(spent_total / goal_amount, 1.0)
+        label = f"Saved ${spent_total:.2f} / ${goal_amount:.2f}"
+    else:
+        print("Unknown goal type.")
+        return
+
+    bar_len = 30
+    filled = int(bar_len * percent)
+    bar = '█' * filled + '-' * (bar_len - filled)
+    print(f"[{bar}] {percent * 100:.1f}%\n{label}")
+    return f"[{bar}] {percent * 100:.1f}%\n{label}"
+
 
 
 def calculate_budget():
@@ -91,9 +156,9 @@ def add_expense():
         category = category.lower()
         if category == 'uncategorized':
             print('Failed to auto-categorize, please enter category manually.')
-            print('Please enter the category of the expense. CUSTOM, Housing, Food, Transportation, Insurance, Health, Debts, Clothes, Personal Care, Investments, Subscriptions, Entertainment, Utilities, Misc')
+            print('Please enter the category of the expense. CUSTOM, Housing, Food, Transportation, Insurance, Health, Debts, Clothes, Personal Care, Investments, Subscriptions, Entertainment, Utilities, Misc, Travel')
             category = input('>').lower()
-        possible_categories = ['housing', 'utilities', 'food', 'groceries', 'transportation', 'insurance', 'health', 'entertainment', 'debts', 'clothes', 'subscriptions', 'personal care', 'investments', 'misc', 'custom']
+        possible_categories = ['housing', 'utilities', 'food', 'groceries', 'transportation', 'insurance', 'health', 'entertainment', 'debts', 'clothes', 'subscriptions', 'personal care', 'investments', 'misc', 'custom', 'travel']
         if category not in possible_categories:
             print('Please enter a valid category')
             category = input('>')
@@ -109,13 +174,28 @@ def add_expense():
         writer.writerow([date_obj.strftime('%Y-%m-%d'), description, category, amount])
 
 
+groq_client = Groq(api_key=api_key)
+def ai_auto_categorize(description):
+    possible_cats = 'Housing, Food, Transportation, Insurance, Health, Debts, Clothes, Personal Care, Investments, Subscriptions, Entertainment, Utilities, Travel, Misc'
+    prompt = f"Categorize the following expense: '{description}' into one of the following categories: {possible_cats}. Write only the category name, NOTHING ELSE."
+    # noinspection PyTypeChecker
+    response = groq_client.chat.completions.create(
+        model="llama3-8b-8192",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+    )
+    return response.choices[0].message.content.strip().lower()
+
 
 def auto_categorize(description):
     description = description.lower()
     for keyword, category in keyword_map.items():
         if keyword in description:
             return category
-    return "uncategorized"
+    try:
+        return ai_auto_categorize(description)
+    except Exception:
+        return "uncategorized"
 
 
 
@@ -244,6 +324,7 @@ def monthly_expenses():
 
 
 def job_monthly():
+    saved = 0
     summary = monthly_expenses()
     budget_real = get_latest_budget()
     if budget_real is not None and month_total > 0:
@@ -255,10 +336,56 @@ def job_monthly():
     if float(month_total) > float(budget_real):
         summary += f"\nYou spent ${float(month_total) - float(budget_real)} more than your budget."
     elif float(month_total) < float(budget_real):
+        saved = float(budget_real) - float(month_total)
         summary += f"\nYou saved ${float(budget_real) - float(month_total)} this month by spending less than your budget."
+    else:
+        summary += "\nYou hit your budget exactly."
+    recommendations_month = ai_recs_monthly(summary)
+    summary += f"\n\nAI Recommendations:\n{recommendations_month}"
     print(summary)
-    show_pie_chart_monthly()
-    send_email(summary, 'piechart.png')
+    try:
+        show_pie_chart_monthly()
+        assert os.path.exists('piechart.png'), "Pie chart image not found."
+    except (ValueError, IndexError, ZeroDivisionError) as e:
+        summary += f"\nCould not generate pie chart due to data issues: {e}"
+    except (IOError, AssertionError) as e:
+        summary += f"\nPie chart file error: {e}"
+    try:
+        goal = load_goal()
+        goal_type = goal['type']
+        if goal_type == 'saving':
+            bar = show_progress_bar(saved)
+        else:
+            bar = show_progress_bar(month_total)
+        summary += f'\n\n{bar}'
+    except (FileNotFoundError, KeyError, json.JSONDecodeError):
+        summary += "\nNo goal data found or file is corrupted."
+    with open('monthly_summary.txt', 'w', newline='') as f:
+        f.write(summary)
+    try:
+        send_email(summary, 'piechart.png')
+    except FileNotFoundError:
+        send_email(summary + "\n(Note: Pie chart image was not attached due to a generation error.)")
+
+
+def ai_recs_monthly(summary):
+    prompt = f"Based on the following monthly expenses summary, briefly analyze and then provide 3 short, actionable budgeting or financial tips: {summary}"
+    try:
+        # noinspection PyTypeChecker
+        response = groq_client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+        )
+        if not hasattr(response, "choices") or not response.choices:
+            return "AI returned an empty or invalid response."
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"[AI Error] {e}")
+        return "AI could not generate recommendations at this time."
+
+
+
 
 
 def job():
@@ -272,9 +399,33 @@ def job():
         summary += f"\nYou have not set any budget"
     else:
         summary += f"\nYou have not spent any money"
+    recommendations = ai_recs_weekly(summary)
+    summary += f"\n\nAI Recommendations:\n{recommendations}"
+    with open('weekly_summary.txt', 'w') as f:
+        f.write(summary)
     print(summary)
     show_pie_chart_weekly()
     send_email(summary, 'piechartweek.png')
+
+def ai_recs_weekly(summary):
+    prompt = f"Based on the following weekly expenses summary, briefly analyze and then provide 3 short, actionable budgeting or financial tips: {summary}"
+    try:
+        # noinspection PyTypeChecker
+        response = groq_client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+        )
+
+        if not hasattr(response, "choices") or not response.choices:
+            return "AI returned an empty or invalid response."
+
+        return response.choices[0].message.content.strip()
+
+    except Exception as e:
+        print(f"[AI Error] {e}")
+        return "AI could not generate recommendations at this time."
+
 
 
 def show_pie_chart_monthly():
@@ -341,11 +492,51 @@ def show_pie_chart_weekly():
     plt.close()
 
 
+def use_ai():
+    print("💬 Welcome to your AI financial assistant.")
+    print("Ask any question about your spending, budget, savings, or financial goals.")
+    print("Type 'exit' to quit.\n")
+    context = ''
+    if os.path.exists('weekly_summary.txt'):
+        with open('weekly_summary.txt') as file:
+            context += f'Weekly Summary:\n{file.read()}\n\n'
+    if os.path.exists('monthly_summary.txt'):
+        with open('monthly_summary.txt') as file:
+            context += f'Monthly Summary:\n{file.read()}\n\n'
+
+    system_prompt = {
+        "role": "system",
+        "content": f'You are a financial expert helping a user manage their personal budget, categorize expenses, optimize spending, and reach savings goals. Answer clearly and concisely. Recent context:\n{context}'
+    }
+
+    while True:
+        user_input = input("You: ")
+        if user_input.lower() in ['exit', 'quit']:
+            print("Exiting AI assistant.")
+            break
+
+        try:
+            # noinspection PyTypeChecker
+            response = groq_client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[
+                    system_prompt,
+                    {"role": "user", "content": user_input}
+                ],
+                temperature=0.5,
+                max_tokens=800
+            )
+            ai_reply = response.choices[0].message.content.strip()
+            print(f"AI: {ai_reply}\n")
+        except Exception as e:
+            print(f"Error: {e}")
+            print("Something went wrong with the AI. Try again later.")
+
 print('Welcome to Financial Tracker!')
 try:
     while True:
-        options = ['view', 'add', 'exit', 'summarize week', 'summarize month', 'budget manual', 'budget calc', 'set email']
-        print('What would you like to do? Options: Add expenses, View expenses, Summarize Week, Summarize Month, Budget Manual, Budget Calc, Set Email, or Exit.')
+        options = ['view', 'add', 'exit', 'summarize week', 'summarize month', 'budget manual', 'budget calc', 'set email', 'use ai', 'set goal']
+        print('What would you like to do? Options: Add expenses, View expenses, Summarize Week, Summarize Month, Use AI, Budget Manual, Budget Calc, Set Email, Set Goal, or Exit.')
         choice = input('>').lower()
         if choice not in options:
             print('Please enter a valid option.')
@@ -363,6 +554,10 @@ try:
             job()
         elif choice == 'summarize month':
             job_monthly()
+        elif choice == 'set goal':
+            set_goal()
+        elif choice == 'use ai':
+            use_ai()
         elif choice == 'exit':
             break
 except KeyboardInterrupt:
